@@ -1,0 +1,134 @@
+import { Room, Client } from "colyseus";
+import { Schema, type, MapSchema } from "@colyseus/schema";
+
+class PlayerState extends Schema {
+  @type("number") x: number = 0;
+  @type("number") y: number = 0;
+  @type("number") z: number = 0;
+  @type("number") rotationY: number = 0;
+  @type("number") health: number = 100;
+  @type("boolean") isDead: boolean = false;
+  @type("string") characterId: string = "a";
+  @type("string") weaponId: string = "m4a1";
+  @type("number") currentAmmo: number = 30;
+  @type("string") team: string = "A";
+}
+
+class GameState extends Schema {
+  @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
+  @type("number") teamAScore: number = 0;
+  @type("number") teamBScore: number = 0;
+  @type("string") gamePhase: string = "waiting";
+  @type("number") timeRemaining: number = 300;
+}
+
+export class GameRoom extends Room<GameState> {
+  maxClients = 8;
+
+  onCreate() {
+    this.setState(new GameState());
+    this.state.gamePhase = "waiting";
+
+    // Game timer
+    this.setSimulationInterval((dt) => {
+      if (this.state.gamePhase === "playing") {
+        this.state.timeRemaining -= dt / 1000;
+        if (this.state.timeRemaining <= 0) {
+          this.state.gamePhase = "ended";
+          this.broadcast("game_ended", {
+            teamAScore: this.state.teamAScore,
+            teamBScore: this.state.teamBScore
+          });
+        }
+      }
+    }, 1000);
+
+    // Handle player movement
+    this.onMessage("move", (client, data) => {
+      const player = this.state.players.get(client.sessionId);
+      if (player && !player.isDead) {
+        player.x = data.x;
+        player.y = data.y;
+        player.z = data.z;
+        player.rotationY = data.rotationY;
+      }
+    });
+
+    // Handle shooting
+    this.onMessage("shoot", (client, data) => {
+      const shooter = this.state.players.get(client.sessionId);
+      if (!shooter || shooter.isDead) return;
+
+      if (data.hitPlayerId) {
+        const target = this.state.players.get(data.hitPlayerId);
+        if (target && !target.isDead && target.team !== shooter.team) {
+          target.health -= data.damage;
+          if (target.health <= 0) {
+            target.health = 0;
+            target.isDead = true;
+            // Update score
+            if (shooter.team === "A") {
+              this.state.teamAScore += 1;
+            } else {
+              this.state.teamBScore += 1;
+            }
+            // Respawn after 3 seconds
+            this.clock.setTimeout(() => {
+              target.health = 100;
+              target.isDead = false;
+            }, 3000);
+          }
+        }
+      }
+      // Broadcast shot to all for visual effects
+      this.broadcast("player_shot", {
+        shooterId: client.sessionId,
+        hitPlayerId: data.hitPlayerId,
+        hitPoint: data.hitPoint
+      });
+    });
+
+    // Handle ability use
+    this.onMessage("use_ability", (client, data) => {
+      this.broadcast("ability_used", {
+        playerId: client.sessionId,
+        ability: data.ability
+      });
+    });
+  }
+
+  onJoin(client: Client, options: any) {
+    const player = new PlayerState();
+    // Assign team (balance teams)
+    const teamACcount = Array.from(this.state.players.values())
+      .filter(p => p.team === "A").length;
+    const teamBCount = Array.from(this.state.players.values())
+      .filter(p => p.team === "B").length;
+    player.team = teamACcount <= teamBCount ? "A" : "B";
+    player.characterId = options.characterId || "a";
+    player.weaponId = options.weaponId || "m4a1";
+    // Spawn position based on team
+    player.x = player.team === "A" ? -10 : 10;
+    player.y = 0;
+    player.z = 0;
+    this.state.players.set(client.sessionId, player);
+
+    // Start game if enough players
+    if (this.state.players.size >= 2 && this.state.gamePhase === "waiting") {
+      this.state.gamePhase = "playing";
+      this.state.timeRemaining = 300;
+      this.broadcast("game_started", {});
+    }
+
+    console.log(`Player joined: ${client.sessionId}, Team: ${player.team}`);
+  }
+
+  onLeave(client: Client) {
+    this.state.players.delete(client.sessionId);
+    console.log(`Player left: ${client.sessionId}`);
+  }
+
+  onDispose() {
+    console.log("Room disposed");
+  }
+}
