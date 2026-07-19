@@ -2,24 +2,23 @@ import { Room, Client } from "colyseus";
 import { Schema, type, MapSchema } from "@colyseus/schema";
 
 class PlayerState extends Schema {
-  @type("number") x: number = 0;
-  @type("number") y: number = 0;
-  @type("number") z: number = 0;
-  @type("number") rotationY: number = 0;
-  @type("number") health: number = 100;
-  @type("boolean") isDead: boolean = false;
-  @type("string") characterId: string = "a";
-  @type("string") weaponId: string = "m4a1";
-  @type("number") currentAmmo: number = 30;
-  @type("string") team: string = "A";
+  x: number = 0;
+  y: number = 0;
+  z: number = 0;
+  rotationY: number = 0;
+  health: number = 100;
+  isDead: boolean = false;
+  characterId: string = "a";
+  weaponId: string = "m4a1";
+  team: string = "A";
 }
 
 class GameState extends Schema {
-  @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
-  @type("number") teamAScore: number = 0;
-  @type("number") teamBScore: number = 0;
-  @type("string") gamePhase: string = "waiting";
-  @type("number") timeRemaining: number = 300;
+  players = new MapSchema<PlayerState>();
+  teamAScore: number = 0;
+  teamBScore: number = 0;
+  gamePhase: string = "waiting";
+  timeRemaining: number = 300;
 }
 
 export class GameRoom extends Room<GameState> {
@@ -27,9 +26,7 @@ export class GameRoom extends Room<GameState> {
 
   onCreate() {
     this.setState(new GameState());
-    this.state.gamePhase = "waiting";
 
-    // Game timer
     this.setSimulationInterval((dt) => {
       if (this.state.gamePhase === "playing") {
         this.state.timeRemaining -= dt / 1000;
@@ -43,7 +40,6 @@ export class GameRoom extends Room<GameState> {
       }
     }, 1000);
 
-    // Handle player movement
     this.onMessage("move", (client, data) => {
       const player = this.state.players.get(client.sessionId);
       if (player && !player.isDead) {
@@ -54,11 +50,9 @@ export class GameRoom extends Room<GameState> {
       }
     });
 
-    // Handle shooting
     this.onMessage("shoot", (client, data) => {
       const shooter = this.state.players.get(client.sessionId);
       if (!shooter || shooter.isDead) return;
-
       if (data.hitPlayerId) {
         const target = this.state.players.get(data.hitPlayerId);
         if (target && !target.isDead && target.team !== shooter.team) {
@@ -66,13 +60,11 @@ export class GameRoom extends Room<GameState> {
           if (target.health <= 0) {
             target.health = 0;
             target.isDead = true;
-            // Update score
             if (shooter.team === "A") {
               this.state.teamAScore += 1;
             } else {
               this.state.teamBScore += 1;
             }
-            // Respawn after 3 seconds
             this.clock.setTimeout(() => {
               target.health = 100;
               target.isDead = false;
@@ -80,7 +72,6 @@ export class GameRoom extends Room<GameState> {
           }
         }
       }
-      // Broadcast shot to all for visual effects
       this.broadcast("player_shot", {
         shooterId: client.sessionId,
         hitPlayerId: data.hitPlayerId,
@@ -88,7 +79,6 @@ export class GameRoom extends Room<GameState> {
       });
     });
 
-    // Handle ability use
     this.onMessage("use_ability", (client, data) => {
       this.broadcast("ability_used", {
         playerId: client.sessionId,
@@ -99,27 +89,22 @@ export class GameRoom extends Room<GameState> {
 
   onJoin(client: Client, options: any) {
     const player = new PlayerState();
-    // Assign team (balance teams)
-    const teamACcount = Array.from(this.state.players.values())
+    const teamACount = Array.from(this.state.players.values())
       .filter(p => p.team === "A").length;
     const teamBCount = Array.from(this.state.players.values())
       .filter(p => p.team === "B").length;
-    player.team = teamACcount <= teamBCount ? "A" : "B";
+    player.team = teamACount <= teamBCount ? "A" : "B";
     player.characterId = options.characterId || "a";
     player.weaponId = options.weaponId || "m4a1";
-    // Spawn position based on team
     player.x = player.team === "A" ? -10 : 10;
     player.y = 0;
     player.z = 0;
     this.state.players.set(client.sessionId, player);
-
-    // Start game if enough players
     if (this.state.players.size >= 2 && this.state.gamePhase === "waiting") {
       this.state.gamePhase = "playing";
       this.state.timeRemaining = 300;
       this.broadcast("game_started", {});
     }
-
     console.log(`Player joined: ${client.sessionId}, Team: ${player.team}`);
   }
 
